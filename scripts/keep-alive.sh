@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Keep-alive ping for the Render free-tier deployment.
+# Health ping for the deployed stack.
 #
-# Render spins a free web service down after ~15 min without inbound traffic;
-# the next visitor then waits through a full cold boot (npm build artifacts are
-# cached, but `alembic upgrade head` + model load + seed check still take 30-90s).
-# Hitting /healthz every 5 min keeps at least one instance warm so real users
-# never pay the cold-start cost.
+# Originally a Render free-tier keep-alive: Render spins a free web service down after
+# ~15 min without inbound traffic and the next visitor waits through a cold boot. That
+# does not apply to the VPS deployment, so this is now a plain reachability check —
+# useful as a manual smoke test from Actions, and usable directly as the URL target for
+# an external monitor (UptimeRobot, Better Stack, cron-job.org) on a 5-minute interval.
 #
 # Usage:
-#   FLEET_URL=https://fleet-digital-twin.onrender.com bash scripts/keep-alive.sh
-#   bash scripts/keep-alive.sh https://fleet-digital-twin.onrender.com
+#   bash scripts/keep-alive.sh https://fleet.example.com
+#   FLEET_URL=https://fleet.example.com bash scripts/keep-alive.sh
 #
 # Exit 0 when the service answers (even "degraded" — that still means the
 # process is up and serving). Exit non-zero only when it is unreachable, so a
 # cron provider can alert on consecutive failures.
 set -euo pipefail
 
-BASE="${1:-${FLEET_URL:-https://fleet-digital-twin.onrender.com}}"
+BASE="${1:-${FLEET_URL:?pass the base URL as \$1 or set FLEET_URL}}"
 BASE="${BASE%/}"
 TIMEOUT="${KEEP_ALIVE_TIMEOUT:-45}"
 

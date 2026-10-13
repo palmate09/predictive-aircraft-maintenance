@@ -1,13 +1,15 @@
 name: deploy
 
-# Runs only after CI passes on main — the `ci` workflow must be green before
-# anything reaches Render. PRs and pushes to other branches trigger CI only;
-# they never touch the live environment.
+# Deploys to the self-hosted VPS over SSH. Runs only after CI is green on main — PRs
+# and pushes to other branches trigger CI only and never touch the live stack.
+#
+# Manual re-deploy of the current main: Actions → deploy → Run workflow.
 on:
   workflow_run:
     workflows: [ci]
     types: [completed]
     branches: [main]
+  workflow_dispatch:
 
 # Never deploy two builds concurrently: a half-migrated database is worse than
 # waiting for the previous deploy to settle.
@@ -20,49 +22,137 @@ permissions:
 
 jobs:
   # ── guard ─────────────────────────────────────────────────────────────────────
-  # workflow_run fires for both success and failure — bail out early so the
-  # deploy job never runs against a broken build.
+  # workflow_run fires for both success and failure — bail out early so the deploy
+  # job never runs against a broken build. workflow_dispatch has no workflow_run
+  # payload, so it is allowed through unconditionally.
   check-ci:
     name: Guard · CI must be green
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     steps:
       - run: echo "CI passed — proceeding to deploy"
 
-  # ── deploy ────────────────────────────────────────────────────────────────────
   deploy:
-    name: Deploy · Render (fleet-digital-twin)
+    name: Deploy · VPS (fleet-digital-twin)
     runs-on: ubuntu-latest
     needs: check-ci
-    timeout-minutes: 10
+    timeout-minutes: 30
+
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      # Absolute path of the clone on the VPS. Falls back to the conventional
+      # ~/apps/predictive-aircraft-maintenance if the variable is unset.
+      VPS_REPO: ${{ vars.VPS_REPO }}
 
     steps:
-      - name: Trigger Render deploy hook
-        # RENDER_DEPLOY_HOOK_URL is the URL from:
-        #   Render dashboard → fleet-digital-twin → Settings → Deploy Hook
-        # Add it as a GitHub Actions secret:
-        #   Repo → Settings → Secrets and variables → Actions → New secret
-        #   Name:  RENDER_DEPLOY_HOOK_URL
-        #   Value: https://api.render.com/deploy/srv-...?key=...
+      # ── SSH plumbing ─────────────────────────────────────────────────────────
+      # The runner is ephemeral, so the key and the host fingerprint are written
+      # fresh on every run. StrictHostKeyChecking stays on: without a known_hosts
+      # entry an unverified key would be accepted silently, which is exactly the
+      # MITM this deployment must not tolerate.
+      - name: Install deploy credentials
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_KEY: ${{ secrets.VPS_KNOWN_KEY }}
         run: |
-          response=$(curl -sf -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
-          echo "Deploy triggered: $response"
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_KEY" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+          # Fail now, with an actionable message, instead of 20 lines into a
+          # confusing "Permission denied (publickey)".
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+          ssh-keygen -l -f ~/.ssh/known_hosts
 
-      - name: Wait for deploy to go live
-        # Poll /healthz every 15 s for up to 10 min.
-        # Render's free tier builds take ~4-6 min; the generous ceiling covers
-        # cold npm ci + pip install + alembic upgrade on a slow day.
+      - name: Verify SSH connectivity
         run: |
-          echo "Waiting for https://fleet-digital-twin.onrender.com to become healthy..."
-          for i in $(seq 1 40); do
-            status=$(curl -sf -o /dev/null -w "%{http_code}" \
-              https://fleet-digital-twin.onrender.com/healthz || echo "000")
-            echo "  attempt $i/40 — HTTP $status"
-            if [ "$status" = "200" ]; then
-              echo "✅ Service is healthy"
-              exit 0
+          set -euo pipefail
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes -o ConnectTimeout=15 \
+            "${VPS_USER}@${VPS_HOST}" \
+            'echo "connected: $(hostname), user $(id -un), docker $(docker --version)"'
+
+      # ── deploy ───────────────────────────────────────────────────────────────
+      # The script is written here and piped over, but it deliberately contains no
+      # logic: everything it does lives in scripts/deploy-vps.sh on the VPS, so a
+      # deploy can be reproduced by hand and the workflow cannot drift from the
+      # script it is supposed to be running.
+      - name: Deploy to the VPS
+        run: |
+          set -euo pipefail
+          cat > /tmp/remote-deploy.sh <<'REMOTE'
+          set -euo pipefail
+          REPO="${1:?usage: remote-deploy.sh <repo-path> <ref>}"
+          DEPLOY_REMOTE="${DEPLOY_REMOTE:-ci}"
+
+          cd "$REPO"
+          echo "--- git fetch ${DEPLOY_REMOTE} ---"
+          # The `ci` remote is the repo's *read-only* deploy key, so a compromised
+          # runner can pull but cannot rewrite history back on the VPS. `origin`
+          # carries the account's write key and is never touched here.
+          #
+          # fetch + merge --ff-only rather than `pull --ff-only`: a divergent local
+          # branch means someone committed on the VPS, and merging it automatically
+          # is how a rollback gets silently undone. This refuses instead.
+          git fetch "${DEPLOY_REMOTE}" "${2:-main}"
+          git merge --ff-only FETCH_HEAD
+
+          echo "--- compose up ---"
+          ./scripts/deploy-vps.sh
+          REMOTE
+          bash -n /tmp/remote-deploy.sh
+
+          repo="${VPS_REPO:-/home/${VPS_USER}/apps/predictive-aircraft-maintenance}"
+          scp -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            /tmp/remote-deploy.sh "${VPS_USER}@${VPS_HOST}:/tmp/remote-deploy.sh"
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "${VPS_USER}@${VPS_HOST}" \
+            "bash /tmp/remote-deploy.sh '$repo' main"
+
+      # ── report ───────────────────────────────────────────────────────────────
+      - name: Report stack state
+        if: always()
+        run: |
+          set -euo pipefail
+          repo="${VPS_REPO:-/home/${VPS_USER}/apps/predictive-aircraft-maintenance}"
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "${VPS_USER}@${VPS_HOST}" \
+            "cd '$repo' && docker compose -f docker-compose.yml -f docker-compose.prod.yml ps"
+
+      - name: Tail logs on failure
+        if: failure()
+        run: |
+          set -uo pipefail
+          repo="${VPS_REPO:-/home/${VPS_USER}/apps/predictive-aircraft-maintenance}"
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "${VPS_USER}@${VPS_HOST}" \
+            "cd '$repo' && docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=120 web api"
+
+  summary:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs: [check-ci, deploy]
+    if: always()
+    steps:
+      - name: Post run summary
+        env:
+          RESULT: ${{ needs.deploy.result }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          {
+            echo "## Deploy · $RESULT"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`${SHA:0:8}\` |"
+            if [ "$RESULT" = "success" ]; then
+              echo "| Stack | web published, api + db internal |"
+              echo "| Revert | \`git revert ${SHA:0:8}\` then re-run this workflow |"
+            else
+              echo "| Logs | see the *Tail logs on failure* step |"
+              echo "| Re-run | SSH to the VPS: \`cd <repo> && ./scripts/deploy-vps.sh\` |"
             fi
-            sleep 15
-          done
-          echo "❌ Service did not become healthy within 10 minutes"
-          exit 1
+          } >> "$GITHUB_STEP_SUMMARY"
