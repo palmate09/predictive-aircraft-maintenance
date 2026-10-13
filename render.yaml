@@ -24,16 +24,23 @@ services:
     plan: free
     region: singapore
 
-    # `./ml` must go in before `./backend`. backend/pyproject.toml lists `rul` as a
-    # runtime dependency, and `rul` is this repo's local package — it is never
-    # published to PyPI. Without this line pip resolves `rul` against the index,
-    # finds nothing, and the build dies with "No matching distribution found for
-    # rul". docker/backend/Dockerfile installs the pair in the same order.
+    # `./ml` is named in the SAME pip invocation as `./backend`, not as a separate
+    # `pip install ./ml` step. backend/pyproject.toml lists `rul` as a runtime
+    # dependency and `rul` is this repo's local package under ./ml — it is never
+    # published to PyPI. Installing them together lets pip resolve `rul` against the
+    # local project; installing ./backend alone makes it hit the index and die with
+    # "No matching distribution found for rul". docker/backend/Dockerfile installs
+    # the pair in the same order.
+    #
+    # The leading echo is a marker: Render applies render.yaml at blueprint-creation
+    # time, so if this string is absent from a build log, the service is running a
+    # stale Build Command and the blueprint needs re-syncing — that silence is the
+    # symptom of this exact failure and nothing in the log would otherwise say so.
     buildCommand: >-
+      echo "FDT-BUILD-v3: installing ./ml and ./backend together" &&
       npm --prefix frontend ci --no-audit --no-fund &&
       npm --prefix frontend run build &&
-      pip install ./ml &&
-      pip install ./backend &&
+      pip install ./ml ./backend &&
       (bash scripts/fetch-cmapss.sh --subset FD001 --quiet || true)
 
     # `cd backend` is load-bearing: alembic.ini has `script_location = alembic` and
