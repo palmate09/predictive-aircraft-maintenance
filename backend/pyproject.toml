@@ -17,18 +17,31 @@ dependencies = [
   "psycopg[binary]>=3.2",
   "xgboost>=2.1",
   "numpy>=1.26",
-  # The feature contract, imported by app/ml/features.py. Installed from ../ml at
-  # build time -- see docker/backend/Dockerfile. `rul.contract` is pure standard
-  # library; numpy/xgboost above are its runtime siblings, already present regardless.
-  "rul",
 ]
 
 [project.optional-dependencies]
 # httpx is required transitively by fastapi.testclient, which every test uses.
 dev = ["pytest>=8.3", "httpx>=0.27", "ruff>=0.7", "mypy>=1.13"]
 
+# `rul` is the feature contract that app/ml/features.py imports. It lives at
+# ../ml/src/rul and is NOT published to PyPI, so it cannot be a dependency here:
+# pip would resolve it against the index and fail with "No matching distribution
+# found for rul". Instead this wheel ships it — `where` lists both roots, so the
+# package is found at ../ml/src and packed alongside `app`.
+#
+# The consequence is that `pip install ./backend` alone is a complete install, with
+# no ordering requirement against a separate `pip install ./ml`. That matters
+# because the deploy target's build command is configuration we do not fully
+# control: Render stores the Blueprint's buildCommand at service-creation time and
+# does not re-read render.yaml on later deploys, so a build command that predates
+# this change kept failing long after the fix was on main.
+#
+# `where` is relative to this pyproject.toml, so any consumer must keep backend/ and
+# ml/ as siblings — see the builder stage of docker/backend/Dockerfile, which copies
+# them into /build/backend and /build/ml for exactly that reason.
 [tool.setuptools.packages.find]
-include = ["app*"]
+where = [".", "../ml/src"]
+include = ["app*", "rul*"]
 
 [tool.ruff]
 line-length = 100

@@ -8,15 +8,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential gcc g++ \
     && rm -rf /var/lib/apt/lists/*
 
-COPY backend/pyproject.toml ./
-# The feature contract lives at the repository root and is a build input, not a runtime
-# one: it is pip-installed into the venv below, so nothing under ml/ is COPYed into the
+COPY backend/pyproject.toml backend/
+# The feature contract lives in the ml package at the repository root and is a build
+# input, not a runtime one: backend/pyproject.toml packs `rul` into the backend wheel
+# by pointing setuptools at `../ml/src`, so nothing under ml/ is COPYed into the
 # runtime stage. `rul.contract` imports only the standard library.
-COPY ml/ ./ml/
+#
+# backend/ and ml/ must land as SIBLINGS under /build rather than being flattened
+# into it: `../ml/src` resolves relative to backend/pyproject.toml. The old layout —
+# backend's files copied straight into /build — is exactly why the contract could
+# only be installed by running `pip install ./ml` before `pip install .`, and why
+# `pip install ./backend` alone could not resolve `rul`.
+#
+# Only pyproject.toml and ml/ are COPYed, not all of backend/, so a change to
+# application source still does not invalidate this dependency layer.
+COPY ml/ ml/
 RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --upgrade pip \
  && /opt/venv/bin/pip install "./ml" \
- && /opt/venv/bin/pip install "." \
+ && /opt/venv/bin/pip install "./backend" \
  && /opt/venv/bin/pip uninstall -y nvidia-nccl-cu12 pip setuptools \
  && find /opt/venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
  && find /opt/venv -type f \( -name "*.pyc" -o -name "*.pyo" -o -name "*.a" -o -name "*.h" -o -name "*.hpp" \) -delete 2>/dev/null || true \
