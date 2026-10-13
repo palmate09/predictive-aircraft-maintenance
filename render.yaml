@@ -24,9 +24,15 @@ services:
     plan: free
     region: singapore
 
+    # `./ml` must go in before `./backend`. backend/pyproject.toml lists `rul` as a
+    # runtime dependency, and `rul` is this repo's local package — it is never
+    # published to PyPI. Without this line pip resolves `rul` against the index,
+    # finds nothing, and the build dies with "No matching distribution found for
+    # rul". docker/backend/Dockerfile installs the pair in the same order.
     buildCommand: >-
       npm --prefix frontend ci --no-audit --no-fund &&
       npm --prefix frontend run build &&
+      pip install ./ml &&
       pip install ./backend &&
       (bash scripts/fetch-cmapss.sh --subset FD001 --quiet || true)
 
