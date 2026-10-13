@@ -45,6 +45,8 @@ backend/data/cmapss/*
 # Trained boosters and feature contracts — staged by scripts/stage_ml_artifacts.py.
 # backend/data/ml/
 backend/backup.sql.gz
+# Rotating pre-deploy dumps written by scripts/deploy-vps.sh.
+backend/backups/
 *.sql
 
 # ── Local databases & dumps ──────────────────────────────────────────────────
