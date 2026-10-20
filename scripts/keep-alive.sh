@@ -8,15 +8,15 @@
 # never pay the cold-start cost.
 #
 # Usage:
-#   FLEET_URL=https://fleet-digital-twin.onrender.com bash scripts/keep-alive.sh
-#   bash scripts/keep-alive.sh https://fleet-digital-twin.onrender.com
+#   FLEET_URL=https://fleet-digital-twin-wyz1.onrender.com bash scripts/keep-alive.sh
+#   bash scripts/keep-alive.sh https://fleet-digital-twin-wyz1.onrender.com
 #
 # Exit 0 when the service answers (even "degraded" — that still means the
 # process is up and serving). Exit non-zero only when it is unreachable, so a
 # cron provider can alert on consecutive failures.
 set -euo pipefail
 
-BASE="${1:-${FLEET_URL:-https://fleet-digital-twin.onrender.com}}"
+BASE="${1:-${FLEET_URL:-https://fleet-digital-twin-wyz1.onrender.com}}"
 BASE="${BASE%/}"
 TIMEOUT="${KEEP_ALIVE_TIMEOUT:-45}"
 

@@ -124,8 +124,11 @@ services:
       # RENDER_EXTERNAL_URL — Render's own public URL for this service, including
       # PR preview hostnames — so previews and renames keep the live stream
       # without an allowlist edit. Custom domains still need adding here.
+      # The subdomain carries Render's -wyz1 suffix (the bare name is taken by
+      # another service); the pingers in scripts/keep-alive.sh and
+      # .github/workflows/keep-alive.yml must match this host, not the bare name.
       - key: FDT_CORS_ORIGINS
-        value: https://fleet-digital-twin.onrender.com
+        value: https://fleet-digital-twin-wyz1.onrender.com
 
       # Absolute, because the process runs from backend/ and these two paths are
       # resolved relative to the CWD.

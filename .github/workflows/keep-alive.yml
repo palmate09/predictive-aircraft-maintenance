@@ -7,7 +7,7 @@ name: keep-alive
 # (a cold boot can exceed the curl timeout — the next run retries).
 #
 # Setup: Settings → Secrets → Actions → New secret `FLEET_URL` with the public
-# Render URL (e.g. https://fleet-digital-twin.onrender.com). Falls back to that
+# Render URL (e.g. https://fleet-digital-twin-wyz1.onrender.com). Falls back to that
 # URL when the secret is absent so forks still exercise the workflow harmlessly.
 # To use a third-party pinger instead (UptimeRobot, Better Stack, cron-job.org),
 # point it at `<FLEET_URL>/healthz` with a 5-minute interval.
@@ -34,4 +34,4 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Warm the service
-        run: bash scripts/keep-alive.sh "${{ secrets.FLEET_URL || 'https://fleet-digital-twin.onrender.com' }}"
+        run: bash scripts/keep-alive.sh "${{ secrets.FLEET_URL || 'https://fleet-digital-twin-wyz1.onrender.com' }}"
